@@ -442,36 +442,60 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run(
+    cipher_name: str,
+    rounds: int = 4,
+    *,
+    generate: bool = True,
+    enable_plotting: bool = True,
+) -> Dict[str, Any]:
+    """端到端运行 exp1_simplify：与 exp2_simplify 风格统一"""
+    if generate:
+        exp_cfg = config.getExperimentConfig("exp1")
+        generate_data(cipher_name, rounds, exp_cfg["block_size"], exp_cfg["keys_size"])
+    return train_and_test(
+        cipher_name=cipher_name,
+        rounds=rounds,
+        epochs=config.getEpochs(),
+        enable_plotting=enable_plotting,
+        trials=config.getExperimentConfig("exp1")["trials"],
+    )
+
+
+def run_generate(cipher_name: str, rounds: int = 4) -> None:
+    """仅生成 exp1 数据"""
+    exp_cfg = config.getExperimentConfig("exp1")
+    generate_data(cipher_name, rounds, exp_cfg["block_size"], exp_cfg["keys_size"])
+
+
+def run_train(
+    cipher_name: str,
+    rounds: int = 4,
+    *,
+    enable_plotting: bool = True,
+) -> Dict[str, Any]:
+    """仅训练并测试 exp1（不生成数据）"""
+    return train_and_test(
+        cipher_name=cipher_name,
+        rounds=rounds,
+        epochs=config.getEpochs(),
+        enable_plotting=enable_plotting,
+        trials=config.getExperimentConfig("exp1")["trials"],
+    )
+
+
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
-    exp_cfg = config.get_experiment_config("exp1")
     if args.command == "generate":
-        generate_data(args.cipher, args.rounds, exp_cfg["block_size"], exp_cfg["keys_size"])
+        run_generate(args.cipher, args.rounds)
         logger.info("数据生成完成")
         return
 
     if args.command == "train":
-        train_and_test(
+        run_train(
             cipher_name=args.cipher,
             rounds=args.rounds,
-            epochs=args.epochs,
             enable_plotting=(not args.disable_plotting),
-            trials=exp_cfg["trials"],
         )
-        # # 简要打印最终结果
-        # tr = results["train"]
-        # te = results["test"]
-        # print("训练验证指标：")
-        # print(f"  final_val_acc={tr['final_val_acc']:.4f}")
-        # print(f"  final_bitwise_sr={tr['final_bitwise_sr']:.4f}")
-        # print(f"  final_log2_sr={tr['final_log2_sr']:.4f}")
-        # print("测试指标：")
-        # print(f"  test_acc={te['test_acc']:.4f}")
-        # print(f"  test_bitwise_sr={te['test_bitwise_sr']:.4f}")
-        # print(f"  test_log2_sr={te['test_log2_sr']:.4f}")
         return
-
-
-if __name__ == "__main__":
-    main()

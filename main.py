@@ -1,15 +1,10 @@
 import argparse
 import os
-# [DEL] 删除旧版 exp1_hyperopt 引入，改用简化版接口（避免重复训练）
-# from experiments.exp1_hyperopt import (
-#     run as run_exp1,
-#     generate_data as generate_exp1_data,
-#     train_model as train_exp1_model
-# )
-# [ADD] 引入 exp1_simplify：使用统一的 train_and_test 入口执行优化与训练
+
 from experiments.exp1_simplify import (
+    run as run_exp1,
     generate_data as generate_exp1_data,
-    train_and_test as train_exp1_model,
+    run_train as train_exp1_model,
 )
 # [DEL] 删除旧版 exp2_attack 引入，改用简化版接口（保持 run/run_train 语义）
 # from experiments.exp2_attack import (
@@ -89,7 +84,8 @@ def main():
     Example:
         >>> # 生成并训练 exp1（present，4轮）
         >>> # 在项目根目录执行：
-        >>> # python main.py --experiment exp1 --cipher present --rounds 4 --mode all
+        >>> # python main.py --experiment exp1 --cipher present \
+        >>> # --rounds 4 --mode all
     """
     parser = argparse.ArgumentParser(
         description="论文《Output Prediction Attacks on Block Ciphers "
@@ -102,9 +98,15 @@ def main():
                         help="密码类型: present, aes, twine (exp3仅支持present变体)")
     parser.add_argument("--rounds", type=int, default=4,
                         help="密码轮数 (默认4轮)")
-    parser.add_argument("--mode", type=str, default="all",
-                        choices=["all", "data", "train"],
-                        help="运行模式: all(数据生成+训练), data(仅数据生成), train(仅训练)")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="all",
+        choices=["all", "data", "train"],
+        help=(
+            "运行模式: all(数据生成+训练), data(仅数据生成), train(仅训练)"
+        ),
+    )
     
     args = parser.parse_args()
 
@@ -113,43 +115,37 @@ def main():
     
     # 根据模式运行指定实验
     if args.experiment == "exp1":
-        if args.mode in ["all", "data"]:
+        # [MOD] 统一为 exp2 风格：all 使用端到端 run，其他模式分别处理
+        if args.mode == "all":
             logger.info(
-                f"开始生成exp1数据 - cipher: {args.cipher}, "
-                f"rounds: {args.rounds}",
-                f"block_size: {config.getBlockSize()}",
-                f"keys_size: {config.getKeySize()}"
-            )
-            generate_exp1_data(
-                cipher_name=args.cipher,
-                rounds=args.rounds,
-                block_size=config.getBlockSize(),
-                keys_size=config.getKeySize(),
-            )
-
-        # [ADD] 使用简化版 exp1_simplify 的统一训练入口（含超参优化）
-        if args.mode in ["all", "train"]:
-            logger.info(
-                f"开始exp1超参数优化训练 - cipher: {args.cipher}, "
+                f"完整运行exp1实验 - cipher: {args.cipher}, "
                 f"rounds: {args.rounds}"
             )
-            # [ADD] 传递配置中的 epochs 与 trials，保持与简化版本参数一致
-            # [MOD] 适配新接口：通过函数读取 epochs 与实验配置
-            train_exp1_model(
-                cipher_name=args.cipher,
-                rounds=args.rounds,
-                epochs=config.getEpochs(),  # [MOD] 从 JSON 读取训练轮数
-                enable_plotting=True,
-                trials=config.getExperimentConfig("exp1")["trials"],  # [MOD] 读取 exp1 配置
-            )
-
-        # [DEL] 删除对旧版 run_exp1 的二次调用，避免重复训练
-        # if args.mode == "all":
-        #     logger.info(
-        #         f"完整运行exp1实验 - cipher: {args.cipher}, "
-        #         f"rounds: {args.rounds}"
-        #     )
-        #     run_exp1(cipher_name=args.cipher, rounds=args.rounds)
+            run_exp1(cipher_name=args.cipher, rounds=args.rounds)
+        else:
+            if args.mode == "data":
+                logger.info(
+                    f"开始生成exp1数据 - cipher: {args.cipher}, "
+                    f"rounds: {args.rounds}",
+                    f"block_size: {config.getBlockSize()}",
+                    f"keys_size: {config.getKeySize()}"
+                )
+                generate_exp1_data(
+                    cipher_name=args.cipher,
+                    rounds=args.rounds,
+                    block_size=config.getBlockSize(),
+                    keys_size=config.getKeySize(),
+                )
+            elif args.mode == "train":
+                logger.info(
+                    f"开始exp1超参数优化训练 - cipher: {args.cipher}, "
+                    f"rounds: {args.rounds}"
+                )
+                train_exp1_model(
+                    cipher_name=args.cipher,
+                    rounds=args.rounds,
+                    enable_plotting=True,
+                )
         
     elif args.experiment == "exp2":
         # [MOD] 简化运行逻辑：all 模式直接使用 run() 端到端，避免重复生成与训练
@@ -180,26 +176,26 @@ def main():
                 train_exp2_model(cipher_name=args.cipher, rounds=args.rounds)
         
     elif args.experiment == "exp3":
-        if args.mode in ["all", "data"]:
-            logger.info(
-                f"开始生成exp3数据 - cipher: {args.cipher}, "
-                f"rounds: {args.rounds}"
-            )
-            generate_exp3_data(cipher_name=args.cipher, rounds=args.rounds)
-            
-        if args.mode in ["all", "train"]:
-            logger.info(
-                f"开始exp3变体攻击训练 - cipher: {args.cipher}, "
-                f"rounds: {args.rounds}"
-            )
-            train_exp3_model(cipher_name=args.cipher, rounds=args.rounds)
-        
+        # [MOD] 统一为 exp2 风格：all 使用端到端 run，其他模式分别处理
         if args.mode == "all":
             logger.info(
                 f"完整运行exp3实验 - cipher: {args.cipher}, "
                 f"rounds: {args.rounds}"
             )
             run_exp3(cipher_name=args.cipher, rounds=args.rounds)
+        else:
+            if args.mode == "data":
+                logger.info(
+                    f"开始生成exp3数据 - cipher: {args.cipher}, "
+                    f"rounds: {args.rounds}"
+                )
+                generate_exp3_data(cipher_name=args.cipher, rounds=args.rounds)
+            elif args.mode == "train":
+                logger.info(
+                    f"开始exp3变体攻击训练 - cipher: {args.cipher}, "
+                    f"rounds: {args.rounds}"
+                )
+                train_exp3_model(cipher_name=args.cipher, rounds=args.rounds)
 
 
 if __name__ == "__main__":

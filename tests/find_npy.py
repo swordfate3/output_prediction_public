@@ -1,6 +1,6 @@
 import numpy as np
 
-save_dir = "/home/fate/gitproject/Output_Prediction/data/exp2_train_grain128a_round256" 
+save_dir = "/home/fate/gitproject/Output_Prediction/data/exp1_train_grain128a_round256" 
 plains = np.load(f"{save_dir}/plain_texts.npy", allow_pickle=False)
 labels = np.load(f"{save_dir}/cipher_texts.npy", allow_pickle=False)
 
