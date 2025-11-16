@@ -1,0 +1,468 @@
+import numpy as np
+# [ADD] 兼容直接运行与包运行的导入方式
+try:
+    # 包上下文下的相对导入
+    from .base_cipher import BaseCipher  # type: ignore
+except Exception:  # [ADD] 直接运行文件时的回退导入
+    from ciphers.base_cipher import BaseCipher  # type: ignore
+
+
+class Grain128a(BaseCipher):
+    """
+    Grain-128a 预输出生成器的对齐实现（不含 MAC），符合公开规范的核心部分：
+
+    - 接口遵循项目约定：位数组输入/输出（np.uint8，值为0/1）
+    - 明文长度固定为 128 比特（block_size=128）
+    - 密钥长度固定为 128 比特（key_size=128）
+    - 内部状态：128位 LFSR + 128位 NFSR
+    - 预热（初始化）256 次：将预输出 z 回馈到两寄存器更新
+    - 工作阶段：按规范更新寄存器，输出预输出位作为密钥流
+    - 预输出 z = h(x) ^ s[i+93] ^ XOR(b[i+j], j∈{2,15,36,45,64,73,89})
+
+    说明：该实现对齐 Grain-128/128a 公共文献中的 f(Y)、g(X)、h(x) 与 z 抽头；
+    未实现可选认证（MAC/AEAD）部分，但不影响预输出与密钥流生成的一致性。
+    """
+
+    def __init__(self, rounds: int = 256, iv: np.ndarray | None = None):
+        # [MOD] 默认轮数调整为 256（论文规定的预热次数）
+        # rounds 保留为接口参数，但初始化固定为 256 次以符合规范
+        super().__init__(block_size=128, key_size=128)
+        self.rounds = int(rounds)
+        # IV：支持 96 或 128 位；默认 96 位全0，余下32位置为1（贴近规范加载方式）
+        if iv is None:
+            # 随机生成 96 位 IV
+            iv_bits = np.random.randint(0, 2, size=96, dtype=np.uint8)
+            # iv_bits = np.zeros(96, dtype=np.uint8)
+        else:
+            iv_bits = np.array(iv, dtype=np.uint8).flatten()
+            if iv_bits.size not in (96, 128):
+                raise ValueError("Grain128a 的 IV 需为96或128比特")
+        self._iv = iv_bits
+
+        # 运行态寄存器
+        self._lfsr = np.zeros(128, dtype=np.uint8)
+        self._nfsr = np.zeros(128, dtype=np.uint8)
+        # [ADD] 认证相关寄存器预初始化（最大 w=32）
+        self._a = np.zeros(32, dtype=np.uint8)  # [ADD] 累加器 A
+        self._r = np.zeros(32, dtype=np.uint8)  # [ADD] 移位寄存器 R
+        self._y_init = np.zeros(64, dtype=np.uint8)  # [ADD] 启动后前 2w 位缓冲
+        self._auth = False  # [ADD] 运行态认证开关
+        self._w = 0  # [ADD] 当前标签长度
+
+    # ===== 状态加载与初始化 =====
+    def _load_state(self, key_bits: np.ndarray) -> None:
+        """
+        加载初始状态到寄存器。
+
+        详细描述：将 128 位密钥加载到 NFSR，将 IV（96 或 128 位）加载到
+        LFSR；当 IV 为 96 位时，按照规范在其后拼接 31 个 1 与 1 个 0。
+
+        Args:
+            key_bits (np.ndarray): 128 位密钥（np.uint8，元素为 0/1）
+
+        Returns:
+            None
+
+        Raises:
+            ValueError: 当密钥长度不是 128 位时抛出
+
+        Example:
+            >>> cipher._load_state(np.zeros(128, dtype=np.uint8))
+        """
+        key_bits = np.array(key_bits, dtype=np.uint8).flatten()
+        if key_bits.size != 128:
+            raise ValueError("Grain128a 需要128位密钥")
+
+        # 加载 NFSR = key
+        self._nfsr[:] = key_bits[:128]
+
+        # 加载 LFSR
+        # - 规范：若 IV 为 96 位，则 LFSR = IV || 31 个 1 || 1 个 0（避免移位等价）
+        # - 若提供 128 位 IV，则直接使用
+        if self._iv.size == 96:
+            self._lfsr[:96] = self._iv
+            self._lfsr[96:127] = 1
+            self._lfsr[127] = 0
+        else:  # 128
+            self._lfsr[:] = self._iv[:128]
+
+    def _initialize(self, mix_rounds: int) -> None:
+        # [MOD] 预热固定 256 次（忽略传入 mix_rounds）
+        steps = mix_rounds
+        for _ in range(steps):
+            z = self._pre_output()
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0]) ^ z) & 1
+            l_new = (l_val ^ z) & 1
+            self._shift_registers(n_new, l_new)
+
+    # ===== 核心布尔函数与更新 =====
+    @staticmethod
+    def _shift(arr: np.ndarray, new_bit: int) -> np.ndarray:
+        """
+        左移一位并在最低位插入新比特。
+
+        Args:
+            arr (np.ndarray): 输入比特数组（np.uint8，元素为 0/1）
+            new_bit (int): 新插入的最低位比特（0 或 1）
+
+        Returns:
+            np.ndarray: 左移后的新数组
+
+        Example:
+            >>> _shift(np.array([1,0,1], dtype=np.uint8), 1)
+            array([0, 1, 1], dtype=uint8)
+        """
+        out = np.empty_like(arr)
+        out[:-1] = arr[1:]
+        out[-1] = new_bit & 1
+        return out
+
+    def _shift_registers(self, n_new: int, l_new: int) -> None:
+        self._nfsr = self._shift(self._nfsr, n_new)
+        self._lfsr = self._shift(self._lfsr, l_new)
+
+    @staticmethod
+    def _xor_bits(bits: np.ndarray, idxs: list[int] | tuple[int, ...]) -> int:
+        """
+        对指定索引位置的比特进行按位异或累加。
+
+        Args:
+            bits (np.ndarray): 比特数组（np.uint8，元素为 0/1）
+            idxs (list[int] | tuple[int, ...]): 需要异或的索引列表
+
+        Returns:
+            int: 异或结果（0 或 1）
+
+        Example:
+            >>> _xor_bits(np.array([1,0,1], dtype=np.uint8), (0,2))
+            0
+        """
+        acc = 0
+        for i in idxs:
+            acc ^= int(bits[i])
+        return acc & 1
+
+    def _l(self, y: np.ndarray) -> int:
+        """
+        LFSR 反馈函数 l。
+
+        详细描述：多项式 l(x) = 1 + x^32 + x^47 + x^58 + x^90 + x^121 + x^128
+        在实现中映射到当前状态相对索引：0, 7, 38, 70, 81, 96。
+
+        Args:
+            y (np.ndarray): LFSR 状态（长度 128）
+
+        Returns:
+            int: 反馈位（0 或 1）
+        """
+        taps = (0, 7, 38, 70, 81, 96)
+        return self._xor_bits(y, taps)
+
+    def _g(self, x: np.ndarray) -> int:
+        """
+        NFSR 非线性反馈函数 g。
+
+        详细描述：包含线性异或项与若干 AND 非线性项，具体索引对齐公开
+        规范，见实现的 `lin_idxs` 与 `pairs`。
+
+        Args:
+            x (np.ndarray): NFSR 状态（长度 128）
+
+        Returns:
+            int: 反馈位（0 或 1）
+        """
+        # 线性项：b[i] ^ b[i+26] ^ b[i+56] ^ b[i+91] ^ b[i+96]
+        lin_idxs = (0, 26, 56, 91, 96)
+        lin = self._xor_bits(x, lin_idxs)
+        # 二次项（成对 AND）：
+        pair_idxs = (
+            (3, 67), (11, 13), (17, 18), (27, 59), (40, 48), (61, 65), (68, 84)
+        )
+        pairs_val = 0
+        for a, b in pair_idxs:
+            pairs_val ^= (int(x[a]) & int(x[b]))
+        # 三次项（乘积）：(22,24,25), (70,78,82)
+        triplets = ((22, 24, 25), (70, 78, 82))
+        triples_val = 0
+        for a, b, c in triplets:
+            triples_val ^= (int(x[a]) & int(x[b]) & int(x[c]))
+        # 四次项（乘积）：(88,92,93,95)
+        a, b, c, d = (88, 92, 93, 95)
+        quads_val = int(x[a]) & int(x[b]) & int(x[c]) & int(x[d])
+        return (lin ^ pairs_val ^ triples_val ^ quads_val) & 1
+
+    def _h(self, x: np.ndarray, y: np.ndarray) -> int:
+        """
+        预输出布尔函数 h(x0..x8)。
+
+        详细描述：h = x0&x1 ^ x2&x3 ^ x4&x5 ^ x6&x7 ^ x0&x4&x8。
+        输入映射（相对 i）：
+        - x0=b[i+12], x1=s[i+8], x2=s[i+13], x3=s[i+20],
+        - x4=b[i+95], x5=s[i+42], x6=s[i+60], x7=s[i+79], x8=s[i+94]
+
+        Args:
+            x (np.ndarray): NFSR 状态（长度 128）
+            y (np.ndarray): LFSR 状态（长度 128）
+
+        Returns:
+            int: h 函数输出位（0 或 1）
+        """
+        b = x
+        s = y
+        x0 = int(b[12])
+        x1 = int(s[8])
+        x2 = int(s[13])
+        x3 = int(s[20])
+        x4 = int(b[95])
+        x5 = int(s[42])
+        x6 = int(s[60])
+        x7 = int(s[79])
+        x8 = int(s[94])
+        h = (x0 & x1) ^ (x2 & x3) ^ (x4 & x5) ^ (x6 & x7) ^ (x0 & x4 & x8)
+        return h & 1
+
+    def _pre_output(self) -> int:
+        """
+        计算预输出位 z。
+
+        详细描述：z = h(x) ^ s[i+93] ^ XOR(b[i+j], j∈A)，其中
+        A = {2, 15, 36, 45, 64, 73, 89}。
+
+        Returns:
+            int: 预输出位（0 或 1）
+
+        Example:
+            >>> z = cipher._pre_output()
+        """
+        h_out = self._h(self._nfsr, self._lfsr)
+        s93 = int(self._lfsr[93])
+        A = (2, 15, 36, 45, 64, 73, 89)
+        nfsr_sum = self._xor_bits(self._nfsr, A)
+        return (h_out ^ s93 ^ nfsr_sum) & 1
+
+    # ===== 密钥流与加/解密 =====
+    def _keystream(self, n_bits: int, key_bits: np.ndarray, *, auth: bool = False, tag_bits_length: int = 64) -> np.ndarray:
+        """
+        生成指定长度的密钥流。
+
+        详细描述：加载状态并执行固定 256 次预热，然后在工作阶段对寄存器
+        进行标准更新，逐位产出密钥流。
+
+        Args:
+            n_bits (int): 密钥流长度（比特数）
+            key_bits (np.ndarray): 128 位密钥（np.uint8，元素为 0/1）
+
+        Returns:
+            np.ndarray: 长度为 n_bits 的密钥流（np.uint8，元素为 0/1）
+        """
+        self._load_state(key_bits)
+        self._initialize(self.rounds)
+        ks = np.zeros(n_bits, dtype=np.uint8)
+        # [DEL] 移除认证分支：认证模式改在 encrypt/decrypt 中实现（严格按论文）
+        for i in range(n_bits):
+            z = self._pre_output()
+            ks[i] = z & 1
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0])) & 1
+            l_new = l_val & 1
+            self._shift_registers(n_new, l_new)
+        return ks
+
+    def encrypt(
+        self,
+        plaintext: np.ndarray,
+        key: np.ndarray,
+        *,
+        auth: bool = False,
+        associated_data: np.ndarray | None = None,
+        tag_bits_length: int = 128,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+        """
+        使用密钥流对明文进行加密（可选开启认证）。
+
+        详细描述：
+        - 常规加密：生成与明文等长的密钥流，然后逐位异或得到密文
+        - 认证开启：在加密后可选吸收关联数据，继续生成标签位并返回 (密文, 标签)
+
+        Args:
+            plaintext (np.ndarray): 128 位明文（np.uint8，元素为 0/1）
+            key (np.ndarray): 128 位密钥（np.uint8，元素为 0/1）
+            auth (bool): 是否开启认证功能
+            associated_data (np.ndarray | None): 关联数据位数组；None 表示无 AD
+            tag_bits_length (int): 认证标签长度（位数），默认 128
+
+        Returns:
+            np.ndarray | tuple[np.ndarray, np.ndarray]:
+            - 未开启认证：返回 128 位密文
+            - 开启认证：返回 (密文, 标签)
+
+        Raises:
+            ValueError: 当输入长度不匹配时抛出
+
+        Example:
+            >>> cipher = Grain128a(rounds=256)
+            >>> ct = cipher.encrypt(pt, key)
+            >>> ct, tag = cipher.encrypt(pt, key, auth=True, tag_bits_length=64)
+        """
+        pt = np.array(plaintext, dtype=np.uint8).flatten()
+        k = np.array(key, dtype=np.uint8).flatten()
+        if pt.size != self.block_size or k.size != self.key_size:
+            raise ValueError(
+                f"Grain128a 仅支持{self.block_size}位明文与{self.key_size}位密钥"
+            )
+        if not auth:
+            ks = self._keystream(pt.size, k)
+            ct = np.bitwise_xor(pt, ks).astype(np.uint8)
+            return ct
+        # [ADD] 认证模式：严格按论文实现（共享预输出，偶位密钥流，奇位馈送 S 寄存器）
+        w = int(tag_bits_length)
+        if w <= 0 or w > 32:
+            raise ValueError("Grain128a 标签长度 w 需在 1..32 范围内")
+        self._load_state(k)
+        self._initialize(self.rounds)
+        # 初始化 MAC：使用启动后前 2w 位
+        self._a.fill(0)  # [MOD] 使用实例属性存储 A
+        self._r.fill(0)  # [MOD] 使用实例属性存储 R
+        for i in range(2 * w):
+            self._y_init[i] = self._pre_output() & 1
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0])) & 1
+            l_new = l_val & 1
+            self._shift_registers(n_new, l_new)
+        for j in range(w):
+            self._a[j] = self._y_init[j]
+        for i in range(w):
+            self._r[i] = self._y_init[w + i]
+        # 加密与 MAC 更新：偶位作为密钥流，奇位喂入 r 并更新 a
+        m_ext = pt.copy()
+        if m_ext.size > 0:
+            m_ext[-1] = 1
+        ct = np.zeros(pt.size, dtype=np.uint8)
+        for i in range(pt.size):
+            # [ADD] 偶位：密钥流（y_{2w+2i}）
+            z_even = self._pre_output() & 1
+            ct[i] = (int(pt[i]) ^ z_even) & 1
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0])) & 1
+            l_new = l_val & 1
+            self._shift_registers(n_new, l_new)
+            # [ADD] 奇位：更新 r（y_{2w+2i+1}）
+            y_odd = self._pre_output() & 1
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0])) & 1
+            l_new = l_val & 1
+            self._shift_registers(n_new, l_new)
+            # r 左移并插入奇位
+            if w > 1:
+                self._r[: w - 1] = self._r[1: w]
+            self._r[w - 1] = y_odd
+            # 更新 a
+            mi = int(m_ext[i]) & 1
+            if mi:
+                self._a[:w] ^= self._r[:w]
+        tag = self._a[:w].copy()
+        return ct, tag
+
+    def decrypt(
+        self,
+        ciphertext: np.ndarray,
+        key: np.ndarray,
+        *,
+        auth: bool = False,
+        associated_data: np.ndarray | None = None,
+        tag_bits: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """
+        使用密钥流对密文进行解密（与加密相同，可选开启认证校验）。
+
+        详细描述：
+        - 常规解密：生成与密文等长的密钥流，然后逐位异或得到明文
+        - 认证开启：可选吸收关联数据，随后生成标签并与传入标签比对，不一致抛异常
+
+        Args:
+            ciphertext (np.ndarray): 128 位密文（np.uint8，元素为 0/1）
+            key (np.ndarray): 128 位密钥（np.uint8，元素为 0/1）
+            auth (bool): 是否开启认证校验
+            associated_data (np.ndarray | None): 关联数据位数组；None 表示无 AD
+            tag_bits (np.ndarray | None): 认证标签位数组（np.uint8，元素为 0/1）
+
+        Returns:
+            np.ndarray: 128 位明文（np.uint8，元素为 0/1）
+
+        Raises:
+            ValueError: 当输入长度不匹配或标签校验失败时抛出
+
+        Example:
+            >>> dec = cipher.decrypt(ct, key)
+            >>> ct, tag = cipher.encrypt(pt, key, auth=True, tag_bits_length=64)
+            >>> dec = cipher.decrypt(ct, key, auth=True, tag_bits=tag)
+        """
+        ct = np.array(ciphertext, dtype=np.uint8).flatten()
+        k = np.array(key, dtype=np.uint8).flatten()
+        if ct.size != self.block_size or k.size != self.key_size:
+            raise ValueError(
+                f"Grain128a 仅支持{self.block_size}位密文与{self.key_size}位密钥"
+            )
+        if not auth:
+            ks = self._keystream(ct.size, k)
+            pt = np.bitwise_xor(ct, ks).astype(np.uint8)
+            return pt
+        if tag_bits is None:
+            raise ValueError("开启认证校验时必须提供 tag_bits")
+        tag_arr = np.array(tag_bits, dtype=np.uint8).flatten()
+        w = int(tag_arr.size)
+        if w <= 0 or w > 32:
+            raise ValueError("Grain128a 标签长度 w 需在 1..32 范围内")
+        self._load_state(k)
+        self._initialize(self.rounds)
+        # [ADD] 初始化 MAC：使用启动后前 2w 位
+        self._a.fill(0)
+        self._r.fill(0)
+        for i in range(2 * w):
+            self._y_init[i] = self._pre_output() & 1
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0])) & 1
+            l_new = l_val & 1
+            self._shift_registers(n_new, l_new)
+        for j in range(w):
+            self._a[j] = self._y_init[j]
+        for i in range(w):
+            self._r[i] = self._y_init[w + i]
+        # [ADD] 解密与 MAC 更新：偶位密钥流，奇位馈送 S 并更新 A
+        pt = np.zeros(ct.size, dtype=np.uint8)
+        for i in range(ct.size):
+            z_even = self._pre_output() & 1
+            pt[i] = (int(ct[i]) ^ z_even) & 1
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0])) & 1
+            l_new = l_val & 1
+            self._shift_registers(n_new, l_new)
+            y_odd = self._pre_output() & 1
+            g_val = self._g(self._nfsr)
+            l_val = self._l(self._lfsr)
+            n_new = (g_val ^ int(self._lfsr[0])) & 1
+            l_new = l_val & 1
+            self._shift_registers(n_new, l_new)
+            if w > 1:
+                self._r[: w - 1] = self._r[1: w]
+            self._r[w - 1] = y_odd
+            mi = int(pt[i]) & 1
+            if i == ct.size - 1:
+                mi = 1
+            if mi:
+                self._a[:w] ^= self._r[:w]
+        gen_tag = self._a[:w].copy()
+        if not np.array_equal(gen_tag, tag_arr):
+            raise ValueError("Grain128a 认证标签验证失败：不匹配")
+        return pt
+
+    # [DEL] 移除关联数据吸收函数，严格按论文无 AEAD 关联数据
+    pass

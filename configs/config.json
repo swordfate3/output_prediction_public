@@ -1,0 +1,185 @@
+{
+  "MODEL_TYPE": "lstm",
+  "EPOCHS": 200,
+  "BLOCK_SIZE": 128,
+  "KEY_SIZE": 128,
+  "HYPERPARAMETER_SEARCH_SPACE": {
+    "hidden_dim": [128, 192, 256, 384, 512],
+    "num_layers": {"min": 2, "max": 6},
+    "lr": [0.0001, 0.0003, 0.001, 0.003],
+    "optimizer": ["SGD", "Adam", "RMSprop"],
+    "batch_size": [250, 500, 750, 1000],
+    "criterion": ["BCELoss", "MSELoss"],
+    "threshold": [0.4, 0.45, 0.5, 0.55, 0.6, 0.65],
+    "num_heads": [2, 4, 8],
+    "dropout": [0.05, 0.1, 0.2, 0.3],
+    "d_state": [8, 16, 32],
+    "d_conv": [3, 4, 5, 7],
+    "expand": [1, 2, 3]
+  },
+  "CIPHER_REGISTRY": {
+    "present": {"class_name": "SmallPRESENT4", "module_path": "ciphers.present", "description": "标准PRESENT密码算法"},
+    "aes": {"class_name": "SmallAES4", "module_path": "ciphers.aes", "description": "简化AES密码算法"},
+    "aes128": {"class_name": "AES128", "module_path": "ciphers.AES128", "description": "AES-128密码算法"},
+    "aes64": {"class_name": "AES64", "module_path": "ciphers.AES64", "description": "AES-64密码算法（64位块/密钥，简化AES结构）"},
+    "twine": {"class_name": "SmallTWINE4", "module_path": "ciphers.twine", "description": "TWINE密码算法"},
+    "weak_S_box1_present": {"class_name": "SmallPRESENT4_WeakSBox1", "module_path": "ciphers.weak_S_box1_present", "description": "弱S盒变体1的PRESENT算法"},
+    "weak_S_box2_present": {"class_name": "SmallPRESENT4_WeakSBox2", "module_path": "ciphers.weak_S_box2_present", "description": "弱S盒变体2的PRESENT算法"},
+    "component_modification_present": {"class_name": "SmallPRESENT4_SwapComponents", "module_path": "ciphers.component_modification_present", "description": "组件修改变体的PRESENT算法"},
+    "grain128a": {"class_name": "Grain128a", "module_path": "ciphers.grain128a", "description": "Grain-128a 流密码的简化实现（128位明文/密钥，位接口）"},
+    "trivium": {"class_name": "Trivium", "module_path": "ciphers.trivium", "description": "Trivium 流密码的简化实现（80位密钥，128位数据样本）"},
+    "acornv3": {"class_name": "AcornV3", "module_path": "ciphers.acornv3", "description": "Acorn v3 流密码的工程简化接口（128位密钥/数据样本）"},
+    "zuc256": {"class_name": "Zuc256", "module_path": "ciphers.zuc256", "description": "ZUC-256 流密码的研究用途简化实现（256位密钥/128位IV）"}
+  },
+  "BEST_HYPERPARAMETERS": {
+    "present": {
+      "hidden_dim": 300,
+      "num_layers": 4,
+      "lr": 0.001,
+      "optimizer": "Adam",
+      "batch_size": 250,
+      "criterion": "BCELoss"
+    },
+    "aes": {
+      "hidden_dim": 300,
+      "num_layers": 4,
+      "lr": 0.001,
+      "optimizer": "RMSprop",
+      "batch_size": 250,
+      "criterion": "BCELoss"
+    },
+    "aes128": {
+      "hidden_dim": 192,
+      "num_layers": 5,
+      "lr": 0.001,
+      "optimizer": "Adam",
+      "batch_size": 250,
+      "criterion": "MSELoss",
+      "threshold": 0.5
+    },
+    "aes64": {
+      "hidden_dim": 512,
+      "num_layers": 3,
+      "lr": 0.001,
+      "optimizer": "RMSprop",
+      "batch_size": 250,
+      "criterion": "MSELoss",
+      "threshold": 0.4
+    },
+    "grain128a": {
+      "hidden_dim": 256,
+      "num_layers": 4,
+      "lr": 0.003,
+      "optimizer": "Adam",
+      "batch_size": 500,
+      "criterion": "BCELoss",
+      "threshold": 0.55,
+      "dropout": 0.1
+    },
+    "grain128a_tmp": {
+      "hidden_dim": 384,
+      "num_layers": 5,
+      "lr": 0.003,
+      "optimizer": "Adam",
+      "batch_size": 750,
+      "criterion": "BCELoss",
+      "threshold": 0.45,
+      "dropout": 0.05
+      
+    },
+    "trivium": {
+      "hidden_dim": 512,
+      "num_layers": 4,
+      "lr": 0.001,
+      "optimizer": "RMSprop",
+      "batch_size": 750,
+      "criterion": "BCELoss",
+      "threshold": 0.5,
+      "dropout": 0.1
+    },
+    "acornv3": {
+      "hidden_dim": 512,
+      "num_layers": 4,
+      "lr": 0.001,
+      "optimizer": "Adam",
+      "batch_size": 1000,
+      "criterion": "BCELoss",
+      "threshold": 0.5,
+      "dropout": 0.1
+    },
+    "zuc256": {
+      "hidden_dim": 512,
+      "num_layers": 4,
+      "lr": 0.001,
+      "optimizer": "Adam",
+      "batch_size": 1000,
+      "criterion": "BCELoss",
+      "threshold": 0.5,
+      "dropout": 0.1
+    },
+    "weak_S_box1_present": {
+      "hidden_dim": 300,
+      "num_layers": 4,
+      "lr": 0.01,
+      "optimizer": "Adam",
+      "batch_size": 250,
+      "criterion": "BCELoss"
+    },
+    "weak_S_box2_present": {
+      "hidden_dim": 300,
+      "num_layers": 4,
+      "lr": 0.01,
+      "optimizer": "Adam",
+      "batch_size": 250,
+      "criterion": "BCELoss"
+    },
+    "component_modification_present": {
+      "hidden_dim": 300,
+      "num_layers": 4,
+      "lr": 0.01,
+      "optimizer": "Adam",
+      "batch_size": 250,
+      "criterion": "BCELoss",
+      "dropout": 0.3
+    }
+  },
+  "EXPERIMENT_CONFIGS": {
+    "exp1": {
+      "name": "超参数优化实验",
+      "description": "使用Optuna进行超参数搜索和优化",
+      "keys": 100,
+      "train_samples": 65536,
+      "test_samples": 3276,
+      "trials": 25,
+      "zero_bounds": [0,111],
+      "target_index": "112-127",
+      "data_prefix": "exp1"
+    },
+    "exp2": {
+      "name": "攻击成功率验证实验",
+      "description": "使用最优超参数验证攻击成功率",
+      "keys": 10,
+      "train_samples": 65536,
+      "test_samples": 32768,
+      "target_index": "112-127",
+      "zero_bounds": null,
+      "data_prefix": "exp2",
+      "best_hyperparams": "$BEST_HYPERPARAMETERS"
+    },
+    "exp3": {
+      "name": "密码变体攻击实验",
+      "description": "对密码算法变体进行攻击实验",
+      "keys": 1,
+      "rounds": 4,
+      "train_samples": 10000,
+      "test_samples": 1000,
+      "target_index": 0,
+      "data_prefix": "exp3",
+      "variants": [
+        "component_modification",
+        "weak_S_box1",
+        "weak_S_box2"
+      ]
+    }
+  }
+}

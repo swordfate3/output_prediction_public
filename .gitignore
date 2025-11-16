@@ -1,0 +1,99 @@
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 分发/打包
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+PIPFILE.lock
+
+# PyInstaller
+*.manifest
+# *.spec
+
+# 单元测试/覆盖率报告
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# 环境变量
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 数据文件
+*.csv
+# *.json
+*.pkl
+*.h5
+*.hdf5
+data/
+datasets/
+
+# 模型文件
+# models/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# 日志文件
+logs/
+*.log
+
+# 临时文件
+temp/
+tmp/
+*.tmp
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 图片文件
+plots/*
+
+# 压缩包
+*.zip
+*.tar.gz
+*.tar
+*.7z
