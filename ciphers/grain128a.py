@@ -20,7 +20,7 @@ class Grain128a(BaseCipher):
     def __init__(self, rounds: int = 256, iv: np.ndarray | None = None, auth_mode: bool = False):
         super().__init__(block_size=128, key_size=128)
         print(f"Grain128a 初始化：{rounds}轮预热，认证模式={auth_mode}")
-        self._rounds = rounds  # 自由设置预热轮数
+        self.rounds = rounds  # 自由设置预热轮数
         
         # 1. IV初始化：仅支持96位（文档1-54）
         if iv is None:
@@ -146,7 +146,7 @@ class Grain128a(BaseCipher):
     def _initialize(self) -> None:
         """预热轮数：预输出反馈到寄存器（文档1-56）"""
         self._pre_output_cache.clear()
-        for _ in range(self._rounds):
+        for _ in range(self.rounds):
             y = self._h()  # 计算预输出（暂不更新寄存器，因需反馈）
             # 预热阶段特殊更新：LFSR/NFSR需反馈预输出y（文档1-56）
             l_new = (self._l(self._lfsr) ^ y) & 1

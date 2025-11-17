@@ -163,7 +163,8 @@ def run(
 ) -> Dict[str, Any]:
     """完整运行 exp2_simplify：保持兼容但建议使用子命令"""
     if generate:
-        generate_data(cipher_name, rounds)
+        # [MOD] 适配新接口：使用小驼峰式函数
+        generate_data(cipher_name, rounds, config.getBlockSize(), config.getKeySize())
     return train_and_report(
         cipher_name=cipher_name,
         rounds=rounds,
@@ -173,7 +174,7 @@ def run(
 
 def run_generate(cipher_name: str, rounds: int = 4) -> None:
     """仅生成数据（采集流程）"""
-    generate_data(cipher_name, rounds)
+    generate_data(cipher_name, rounds, config.getBlockSize(), config.getKeySize())
 
 
 def run_train(

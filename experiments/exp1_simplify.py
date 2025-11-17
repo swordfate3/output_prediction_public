@@ -451,8 +451,7 @@ def run(
 ) -> Dict[str, Any]:
     """端到端运行 exp1_simplify：与 exp2_simplify 风格统一"""
     if generate:
-        exp_cfg = config.getExperimentConfig("exp1")
-        generate_data(cipher_name, rounds, exp_cfg["block_size"], exp_cfg["keys_size"])
+        generate_data(cipher_name, rounds, config.getBlockSize(), config.getKeySize())
     return train_and_test(
         cipher_name=cipher_name,
         rounds=rounds,
@@ -464,8 +463,7 @@ def run(
 
 def run_generate(cipher_name: str, rounds: int = 4) -> None:
     """仅生成 exp1 数据"""
-    exp_cfg = config.getExperimentConfig("exp1")
-    generate_data(cipher_name, rounds, exp_cfg["block_size"], exp_cfg["keys_size"])
+    generate_data(cipher_name, rounds, config.getBlockSize(), config.getKeySize())
 
 
 def run_train(

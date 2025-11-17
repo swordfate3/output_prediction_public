@@ -7,9 +7,10 @@ np.random.seed(42)
 class BaseCipher:
     """分组密码基类，定义通用接口"""
 
-    def __init__(self, block_size, key_size):
+    def __init__(self, block_size, key_size, iv_size: None = None):
         self.block_size = block_size  # 块大小（比特）
         self.key_size = key_size  # 密钥大小（比特）
+        self.iv_size = iv_size  # 初始化向量大小（比特）
         self.rounds = 0  # 轮数（由子类设置）
         self.S_BOX = None  # S盒（子类实现）
         # [ADD] 新增：统一的随机数生成器，保证密钥与明文生成一致可复现

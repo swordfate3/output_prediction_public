@@ -2,7 +2,7 @@
   "MODEL_TYPE": "lstm",
   "EPOCHS": 200,
   "BLOCK_SIZE": 128,
-  "KEY_SIZE": 128,
+  "KEY_SIZE": 80,
   "HYPERPARAMETER_SEARCH_SPACE": {
     "hidden_dim": [128, 192, 256, 384, 512],
     "num_layers": {"min": 2, "max": 6},
