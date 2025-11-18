@@ -337,7 +337,9 @@ def generate_dataset(
     zero_range=None,
     shuffle=True,
     batch_size=1000,
-    resume=True
+    resume=True,
+    # [ADD] 新增: 多密钥扩展开关，默认关闭；开启时 total_data 传入整批明文
+    multiKeyExpand: bool = False
 ):
     """
     生成明文-密文对数据集（支持分批次生成和断点续传）
@@ -348,7 +350,12 @@ def generate_dataset(
     Args:
         cipher: 密码实例，用于加密操作
         num_keys (int): 生成的密钥数量
-        total_data (int): 总样本数量，按 num_keys 平均分配，余数由最后一个密钥生成
+        total_data (int|np.ndarray):
+            - 当 multiKeyExpand=False（默认）：总样本数量，按 num_keys 平均分配，余数由最后一个密钥生成
+            - 当 multiKeyExpand=True：
+              [ADD] 支持两种形式：
+              1) 传入形状为 (N, block_size) 的明文位数组，表示基础明文集
+              2) 传入正整数 N，表示自动生成 N 条基础明文并进行多密钥扩展
         save_dir (str): 数据集保存目录路径
         target_index: 目标比特位索引，支持以下格式：
             - int: 单个比特位索引 (例如: 0)
@@ -360,6 +367,7 @@ def generate_dataset(
         shuffle (bool): 是否打乱数据顺序，默认为True
         batch_size (int): 每个批次的样本数量，默认1000
         resume (bool): 是否启用断点续传，默认True
+        multiKeyExpand (bool): 开启后对整批明文进行多密钥扩展，总样本数为 N*num_keys
 
     Returns:
         None: 数据集直接保存到指定目录
@@ -381,22 +389,53 @@ def generate_dataset(
         # 使用目录管理器确保目录存在
         save_dir = ensure_directory(save_dir)
         
-        # 总样本数量按密钥平均分配，余数由最后一个密钥生成
-        if num_keys <= 0:
-            raise ValueError("num_keys 必须为正整数")
-        if total_data <= 0:
-            raise ValueError("total_data 必须为正整数")
-
-        total_samples = int(total_data)
-        per_key = total_samples // num_keys
-        remainder = total_samples % num_keys
-        total_batches = (total_samples + batch_size - 1) // batch_size
-        
-        logger.info(
-            f"开始生成数据集: 总样本 {total_samples}，密钥数 {num_keys}，"
-            f"每密钥分配 {per_key}，最后一个密钥额外 {remainder}"
-        )
-        logger.info(f"每批次大小: {batch_size}，目标索引: {target_index}")
+        # [ADD] 新增：多密钥扩展分支与原有分配分支
+        if multiKeyExpand:
+            if num_keys <= 0:
+                raise ValueError("num_keys 必须为正整数")
+            # [ADD] 支持 total_data 为二维数组或正整数
+            if isinstance(total_data, np.ndarray):
+                if total_data.ndim != 2:
+                    raise ValueError("multiKeyExpand=True 时，total_data 必须是二维数组 (N, block_size)")
+                if int(total_data.shape[1]) != int(cipher.block_size):
+                    raise ValueError(
+                        f"明文列数必须等于块大小 {cipher.block_size}，当前为 {total_data.shape[1]}"
+                    )
+                # [ADD] 规范化基础明文集副本，避免后续就地修改影响外部
+                base_pts = np.array(total_data, dtype=np.uint8)
+                base_samples = int(base_pts.shape[0])
+            elif isinstance(total_data, (int, np.integer)):
+                # [ADD] total_data 为样本数 N：自动生成 N 条基础明文
+                base_samples = int(total_data)
+                if base_samples <= 0:
+                    raise ValueError("multiKeyExpand=True 时，total_data(样本数) 必须为正整数")
+                base_pts = np.empty((base_samples, int(cipher.block_size)), dtype=np.uint8)
+                for i in range(base_samples):
+                    # [ADD] 逐条生成基础明文，保证跨密钥重复使用同一批明文
+                    base_pts[i] = cipher.generateRandomBits(cipher.block_size)
+            else:
+                raise ValueError("multiKeyExpand=True 时，total_data 必须是二维数组或正整数样本数")
+            total_samples = base_samples * int(num_keys)
+            total_batches = (total_samples + batch_size - 1) // batch_size
+            logger.info(
+                f"[多密钥扩展] 基础样本 {base_samples}，密钥数 {num_keys}，总样本 {total_samples}"
+            )
+            logger.info(f"每批次大小: {batch_size}，目标索引: {target_index}")
+        else:
+            # 总样本数量按密钥平均分配，余数由最后一个密钥生成
+            if num_keys <= 0:
+                raise ValueError("num_keys 必须为正整数")
+            if total_data <= 0:
+                raise ValueError("total_data 必须为正整数")
+            total_samples = int(total_data)
+            per_key = total_samples // num_keys
+            remainder = total_samples % num_keys
+            total_batches = (total_samples + batch_size - 1) // batch_size
+            logger.info(
+                f"开始生成数据集: 总样本 {total_samples}，密钥数 {num_keys}，"
+                f"每密钥分配 {per_key}，最后一个密钥额外 {remainder}"
+            )
+            logger.info(f"每批次大小: {batch_size}，目标索引: {target_index}")
         
         # 检查断点续传
         completed_batches = 0
@@ -426,81 +465,125 @@ def generate_dataset(
             zero_bounds = (s, e)
             logger.info(f"启用密文置零: 区间 [{s}, {e}] (闭区间)")
 
-        for key_idx in range(num_keys):
-            # [MOD] 使用统一的随机位生成函数替换旧的 generate_key
-            # [DEL] 删除旧接口的直接调用以兼容 BaseCipher 的精简接口
-            key = cipher.generateRandomBits(cipher.key_size)
-
-            # 该密钥的样本数（最后一个密钥承担余数）
-            this_key_samples = (
-                per_key
-                + (remainder if key_idx == num_keys - 1 else 0)
-            )
-
-            for sample_idx in range(this_key_samples):
-                # 跳过已完成的样本
-                if sample_count < samples_to_skip:
+        # [ADD] 新增：根据开关选择生成模式
+        if multiKeyExpand:
+            # [MOD] 使用上方规范化后的 base_pts 与 base_N
+            base_N = int(base_pts.shape[0])
+            for key_idx in range(num_keys):
+                key = cipher.generateRandomBits(cipher.key_size)
+                # 逐条加密，降低峰值内存占用
+                for idx in range(base_N):
+                    if sample_count < samples_to_skip:
+                        sample_count += 1
+                        continue
+                    plain_text = np.array(base_pts[idx], dtype=np.uint8)
+                    if use_zeroing:
+                        num_bits = int(plain_text.size)
+                        if zero_bounds is None:
+                            raise RuntimeError("zero_bounds 为 None，无法解包")
+                        else:
+                            s, e = zero_bounds
+                        if s < 0 or e >= num_bits:
+                            raise IndexError(
+                                f"zero_range 超出明文长度范围 [0, {num_bits-1}]"
+                            )
+                        plain_text[s:e + 1] = 0
+                    cipher_text = cipher.encrypt(plain_text, key)
+                    current_batch_plain.append(plain_text)
+                    current_batch_cipher.append(cipher_text)
                     sample_count += 1
-                    continue
-                
-                # [MOD] 使用统一的随机位生成函数替换旧的 generate_plaintext
-                # [DEL] 删除旧接口的直接调用以兼容 BaseCipher 的精简接口
-                plain_text = cipher.generateRandomBits(cipher.block_size)
-                
-                # 在提取标签前，对明指定区间置零（闭区间）
-                if use_zeroing:
-                    # 使用明文长度进行边界检查
-                    num_bits = int(plain_text.size)
-                    if zero_bounds is None:
-                        raise RuntimeError("zero_bounds 为 None，无法解包")
-                    else:
-                        s, e = zero_bounds
-
-                    if s < 0 or e >= num_bits:
-                        raise IndexError(
-                            f"zero_range 超出明文长度范围 [0, {num_bits-1}]"
+                    if (len(current_batch_plain) >= batch_size or
+                            sample_count >= total_samples):
+                        batch_plain_np = np.array(current_batch_plain, dtype=np.uint8)
+                        batch_cipher_np = np.array(current_batch_cipher, dtype=np.uint8)
+                        batch_labels = extractTargetBits(batch_cipher_np, target_index)
+                        _save_batch_data(
+                            batch_plain_np, batch_labels,
+                            current_batch_num, save_dir, "plain"
                         )
-                    plain_text[s:e + 1] = 0
-                cipher_text = cipher.encrypt(plain_text, key)
-                current_batch_plain.append(plain_text)
-                current_batch_cipher.append(cipher_text)
-                sample_count += 1
-                
-                # 当前批次已满或是最后一个样本
-                if (len(current_batch_plain) >= batch_size or
-                        sample_count >= total_samples):
+                        logger.info(
+                            f"批次 {current_batch_num}/{total_batches} 完成 "
+                            f"({len(current_batch_plain)} 样本)"
+                        )
+                        current_batch_plain = []
+                        current_batch_cipher = []
+                        current_batch_num += 1
+        else:
+            for key_idx in range(num_keys):
+                # [MOD] 使用统一的随机位生成函数替换旧的 generate_key
+                # [DEL] 删除旧接口的直接调用以兼容 BaseCipher 的精简接口
+                key = cipher.generateRandomBits(cipher.key_size)
+
+                # 该密钥的样本数（最后一个密钥承担余数）
+                this_key_samples = (
+                    per_key
+                    + (remainder if key_idx == num_keys - 1 else 0)
+                )
+
+                for sample_idx in range(this_key_samples):
+                    # 跳过已完成的样本
+                    if sample_count < samples_to_skip:
+                        sample_count += 1
+                        continue
                     
-                    # 转换为numpy数组
-                    batch_plain_np = np.array(
-                        current_batch_plain,
-                        dtype=np.uint8
-                    )
-                    batch_cipher_np = np.array(
-                        current_batch_cipher,
-                        dtype=np.uint8
-                    )
+                    # [MOD] 使用统一的随机位生成函数替换旧的 generate_plaintext
+                    # [DEL] 删除旧接口的直接调用以兼容 BaseCipher 的精简接口
+                    plain_text = cipher.generateRandomBits(cipher.block_size)
                     
-                    # 提取标签
-                    batch_labels = extractTargetBits(
-                        batch_cipher_np,
-                        target_index
-                    )
+                    # 在提取标签前，对明指定区间置零（闭区间）
+                    if use_zeroing:
+                        # 使用明文长度进行边界检查
+                        num_bits = int(plain_text.size)
+                        if zero_bounds is None:
+                            raise RuntimeError("zero_bounds 为 None，无法解包")
+                        else:
+                            s, e = zero_bounds
+
+                        if s < 0 or e >= num_bits:
+                            raise IndexError(
+                                f"zero_range 超出明文长度范围 [0, {num_bits-1}]"
+                            )
+                        plain_text[s:e + 1] = 0
+                    cipher_text = cipher.encrypt(plain_text, key)
+                    current_batch_plain.append(plain_text)
+                    current_batch_cipher.append(cipher_text)
+                    sample_count += 1
                     
-                    # 保存批次
-                    _save_batch_data(
-                        batch_plain_np, batch_labels, 
-                        current_batch_num, save_dir, "plain"
-                    )
-                    
-                    logger.info(
-                        f"批次 {current_batch_num}/{total_batches} 完成 "
-                        f"({len(current_batch_plain)} 样本)"
-                    )
-                    
-                    # 重置当前批次
-                    current_batch_plain = []
-                    current_batch_cipher = []
-                    current_batch_num += 1
+                    # 当前批次已满或是最后一个样本
+                    if (len(current_batch_plain) >= batch_size or
+                            sample_count >= total_samples):
+                        
+                        # 转换为numpy数组
+                        batch_plain_np = np.array(
+                            current_batch_plain,
+                            dtype=np.uint8
+                        )
+                        batch_cipher_np = np.array(
+                            current_batch_cipher,
+                            dtype=np.uint8
+                        )
+                        
+                        # 提取标签
+                        batch_labels = extractTargetBits(
+                            batch_cipher_np,
+                            target_index
+                        )
+                        
+                        # 保存批次
+                        _save_batch_data(
+                            batch_plain_np, batch_labels, 
+                            current_batch_num, save_dir, "plain"
+                        )
+                        
+                        logger.info(
+                            f"批次 {current_batch_num}/{total_batches} 完成 "
+                            f"({len(current_batch_plain)} 样本)"
+                        )
+                        
+                        # 重置当前批次
+                        current_batch_plain = []
+                        current_batch_cipher = []
+                        current_batch_num += 1
         
         # 合并所有批次文件
         logger.info("开始合并批次文件...")
@@ -549,9 +632,10 @@ if __name__ == "__main__":
     generate_dataset(
         cipher=cipher,
         num_keys=10,
-        total_data=32768,  # 总样本数≈2^15，最后一个密钥承担余数
+        total_data=300,  # 总样本数≈2^15，最后一个密钥承担余数
         save_dir=os.path.join(config.getDataDirectory(), "test_sample"),  # [MOD] 使用新接口获取数据目录
         target_index="0-7",
         shuffle=False,
-        batch_size=1000
+        batch_size=1000,
+        multiKeyExpand=True
     )
